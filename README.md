@@ -69,7 +69,12 @@ home screen for fullscreen (PWA).
    the profile.
 5. Point the camera at the ground along the profile line. The section hangs
    below the yellow ground line, 2 m deep, depth ticks every 0.5 m.
-6. Calibrate: **1-finger drag** rotates the view heading (fix compass error),
+6. **Anchor**: stand still where you want to view from and tap
+   **⚓ Anchor** — the app averages GPS for 20 s, then locks your position
+   so the view stops drifting (only the gyro moves it). Tap again to
+   unlock when you walk to a new spot; the app also warns if you moved
+   more than a few meters while anchored.
+7. Calibrate: **1-finger drag** rotates the view heading (fix compass error),
    **2-finger drag** shifts the profile on the ground (fix GPS offset).
    Settings persist per profile on the device; **reset align** clears them.
 7. Adjust palette / gain / opacity / phone height in the bottom panel.

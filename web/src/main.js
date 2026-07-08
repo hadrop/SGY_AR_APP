@@ -153,6 +153,7 @@ function enterViewer(label) {
   $('chip-mode').textContent = label;
   applyProfileOffset();
   applyUniforms();
+  updateAnchorButton();
 }
 
 $('btn-ar').addEventListener('click', startAr);
@@ -169,7 +170,37 @@ $('ctl-height').addEventListener('input', () => {
   saveSettings();
 });
 
+$('btn-anchor').addEventListener('click', () => {
+  const g = state.geo;
+  if (!g) return;                       // debug mode: no GPS
+  if (g.mode === 'follow') {
+    if (!g.startAnchor(20)) return;     // needs a GPS fix first
+  } else {
+    g.unlock();                         // anchoring/anchored -> follow again
+  }
+  updateAnchorButton();
+});
+
+function updateAnchorButton() {
+  const btn = $('btn-anchor');
+  const g = state.geo;
+  if (!g) { btn.style.display = 'none'; return; }
+  btn.style.display = '';
+  if (g.mode === 'anchoring') {
+    btn.className = 'cal active';
+    btn.textContent = `⚓ hold still… ${Math.round(g.anchorProgress * 100)}%`;
+  } else if (g.mode === 'anchored') {
+    btn.className = 'cal locked';
+    btn.textContent = g.walkedAway
+      ? '⚓ moved — tap to unlock' : '⚓ anchored (tap to unlock)';
+  } else {
+    btn.className = 'cal';
+    btn.textContent = '⚓ Anchor (stand still 20 s)';
+  }
+}
+
 for (const btn of document.querySelectorAll('#calib-row .cal')) {
+  if (btn.id === 'btn-anchor') continue;
   btn.addEventListener('click', () => {
     const o = state.orientation;
     if (btn.dataset.cal === 'reset') {
@@ -238,8 +269,14 @@ function updateHud() {
     if (state.geo.hasFix) {
       user = state.geo.position;
       const acc = state.geo.accuracy;
-      gpsChip.textContent = `GPS ±${acc.toFixed(0)} m`;
-      gpsChip.className = 'chip ' + (acc <= 8 ? 'good' : 'warn');
+      if (state.geo.mode === 'anchored') {
+        gpsChip.textContent = state.geo.walkedAway
+          ? '⚓ you moved — re-anchor' : '⚓ position locked';
+        gpsChip.className = 'chip ' + (state.geo.walkedAway ? 'warn' : 'good');
+      } else {
+        gpsChip.textContent = `GPS ±${acc.toFixed(0)} m`;
+        gpsChip.className = 'chip ' + (acc <= 8 ? 'good' : 'warn');
+      }
     } else {
       gpsChip.textContent = state.geo.error
         ? 'GPS error' : 'GPS acquiring…';
@@ -263,6 +300,7 @@ function updateHud() {
   const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
   const heading = Math.atan2(fwd.x, -fwd.z);
   state.minimap.draw(user, heading);
+  updateAnchorButton();
 }
 
 // ------------------------------------------------------------ render loop

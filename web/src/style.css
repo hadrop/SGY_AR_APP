@@ -121,6 +121,9 @@ html, body {
 }
 #controls label { display: flex; align-items: center; gap: 6px; }
 #controls input[type="range"] { width: 90px; }
+#btn-anchor.active { border-color: #2f81f7; color: #7db4ff; }
+#btn-anchor.locked { border-color: #7dd97b; color: #7dd97b; }
+
 #controls select, #controls .cal {
   background: #21262d;
   color: #e8ecf0;

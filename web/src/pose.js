@@ -107,14 +107,30 @@ export class OrientationTracker {
 
 // --------------------------------------------------------------- GPS
 
+// Position modes:
+//   follow   - tracks GPS with smoothing + deadband (default, for walking)
+//   anchoring - standing still, averaging fixes for a robust position
+//   anchored - position hard-locked; only gyro moves the view
+const DEADBAND_M = 1.5;      // ignore smoothed GPS moves smaller than this
+const GLIDE_STOP_M = 0.15;   // stop gliding when this close to target
+const WALK_AWAY_M = 4.0;     // warn when this far from the locked anchor
+
 export class GeoTracker {
   constructor(anchorLat, anchorLon) {
     this.anchorLat = anchorLat;
     this.anchorLon = anchorLon;
-    this.position = { e: 0, n: 0 };   // smoothed ENU
+    this.position = { e: 0, n: 0 };   // rendered position (drives camera)
     this.raw = null;
     this.accuracy = Infinity;
     this.hasFix = false;
+    this.mode = 'follow';
+    this.anchorProgress = 0;          // 0..1 while anchoring
+    this.walkedAway = false;          // true if user left a locked anchor
+    this._smoothed = null;
+    this._gliding = false;
+    this._samples = [];
+    this._anchorEnd = 0;
+    this._anchorDurationMs = 0;
     this._watchId = null;
   }
 
@@ -129,7 +145,11 @@ export class GeoTracker {
         this.accuracy = accuracy;
         if (!this.hasFix) {
           this.position = { ...enu };
+          this._smoothed = { ...enu };
           this.hasFix = true;
+        }
+        if (this.mode === 'anchoring') {
+          this._samples.push({ ...enu, acc: Math.max(accuracy, 1) });
         }
       },
       (err) => { this.error = err; },
@@ -137,12 +157,75 @@ export class GeoTracker {
     );
   }
 
-  // low-pass filter toward latest fix; call each frame
+  // Begin averaging fixes; user should stand still for the duration.
+  startAnchor(durationS = 20) {
+    if (!this.hasFix) return false;
+    this.mode = 'anchoring';
+    this._samples = this.raw ? [{ ...this.raw, acc: Math.max(this.accuracy, 1) }] : [];
+    this._anchorDurationMs = durationS * 1000;
+    this._anchorEnd = performance.now() + this._anchorDurationMs;
+    this.anchorProgress = 0;
+    this.walkedAway = false;
+    return true;
+  }
+
+  unlock() {
+    this.mode = 'follow';
+    this.walkedAway = false;
+    this._smoothed = this.raw ? { ...this.raw } : this._smoothed;
+  }
+
+  _finishAnchor() {
+    // robust accuracy-weighted mean: drop samples much worse than median
+    const s = this._samples;
+    if (s.length) {
+      const accs = s.map((x) => x.acc).sort((a, b) => a - b);
+      const medAcc = accs[Math.floor(accs.length / 2)];
+      const kept = s.filter((x) => x.acc <= 2 * medAcc);
+      let we = 0, wn = 0, w = 0;
+      for (const x of kept) {
+        const wi = 1 / (x.acc * x.acc);
+        we += x.e * wi; wn += x.n * wi; w += wi;
+      }
+      if (w > 0) this.position = { e: we / w, n: wn / w };
+    }
+    this.mode = 'anchored';
+    this.anchorProgress = 1;
+  }
+
   update(dt) {
     if (!this.hasFix || !this.raw) return;
+
+    if (this.mode === 'anchoring') {
+      // hold still visually while collecting; finish when time is up
+      const remaining = this._anchorEnd - performance.now();
+      this.anchorProgress = 1 - Math.max(remaining, 0) / this._anchorDurationMs;
+      if (remaining <= 0) this._finishAnchor();
+      return;
+    }
+
+    if (this.mode === 'anchored') {
+      const d = Math.hypot(this.raw.e - this.position.e,
+                           this.raw.n - this.position.n);
+      this.walkedAway = d > Math.max(WALK_AWAY_M, this.accuracy);
+      return;
+    }
+
+    // follow: low-pass the raw fixes, then apply a deadband so the view
+    // stays perfectly still unless the position really moved
     const t = 1 - Math.exp(-dt * 1.5);
-    this.position.e += (this.raw.e - this.position.e) * t;
-    this.position.n += (this.raw.n - this.position.n) * t;
+    this._smoothed.e += (this.raw.e - this._smoothed.e) * t;
+    this._smoothed.n += (this.raw.n - this._smoothed.n) * t;
+
+    const dist = Math.hypot(this._smoothed.e - this.position.e,
+                            this._smoothed.n - this.position.n);
+    if (dist > DEADBAND_M) this._gliding = true;
+    if (this._gliding) {
+      const g = 1 - Math.exp(-dt * 2.5);
+      this.position.e += (this._smoothed.e - this.position.e) * g;
+      this.position.n += (this._smoothed.n - this.position.n) * g;
+      if (dist < GLIDE_STOP_M) this._gliding = false;
+    }
   }
 
   stop() {
