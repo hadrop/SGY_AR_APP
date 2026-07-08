@@ -1,0 +1,13 @@
+{
+  "name": "GPR AR Viewer",
+  "short_name": "GPR AR",
+  "description": "Augmented reality viewer for GPR profiles below the ground",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#101418",
+  "theme_color": "#101418",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

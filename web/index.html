@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#101418" />
+  <title>GPR AR Viewer</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <video id="camera" autoplay muted playsinline></video>
+  <canvas id="scene"></canvas>
+
+  <div id="hud">
+    <div id="status-chips">
+      <span class="chip" id="chip-mode">—</span>
+      <span class="chip" id="chip-gps">GPS —</span>
+      <span class="chip" id="chip-dist">dist —</span>
+    </div>
+    <canvas id="minimap" width="180" height="180"></canvas>
+  </div>
+
+  <div id="start-overlay">
+    <div class="panel">
+      <h1>GPR AR Viewer</h1>
+      <p id="profile-info">Loading profile…</p>
+      <button id="btn-ar" disabled>Start AR</button>
+      <button id="btn-debug" disabled>Desktop debug mode</button>
+      <p class="hint" id="start-hint"></p>
+    </div>
+  </div>
+
+  <div id="controls">
+    <div class="row">
+      <label>Palette
+        <select id="ctl-palette">
+          <option value="0">Grayscale</option>
+          <option value="1">Red-White-Blue</option>
+        </select>
+      </label>
+      <label>Gain <input id="ctl-gain" type="range" min="0.2" max="6" step="0.1" value="1" /></label>
+    </div>
+    <div class="row">
+      <label>Opacity <input id="ctl-opacity" type="range" min="0.2" max="1" step="0.05" value="0.95" /></label>
+      <label>Phone height <input id="ctl-height" type="range" min="1.0" max="2.2" step="0.05" value="1.6" /><span id="height-val">1.60 m</span></label>
+    </div>
+    <div class="row" id="calib-row">
+      <button class="cal" data-cal="rot-">⟲ rotate</button>
+      <button class="cal" data-cal="rot+">rotate ⟳</button>
+      <button class="cal" data-cal="reset">reset align</button>
+      <span class="hint">1-finger drag: rotate · 2-finger drag: shift</span>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
