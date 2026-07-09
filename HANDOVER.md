@@ -1,80 +1,78 @@
-# Session handover — 2026-07-09 (evening)
+# Session handover — 2026-07-09 (late)
 
 ## Where the project stands
 
 Live app: **https://hadrop.github.io/SGY_AR_APP/** (auto-deploys from
 master; repo hadrop/SGY_AR_APP). Two tracks:
 
-- **v1 (sensor AR)** — GPS + compass + gyro. Complete, field-tested,
-  untouched this session except the profile picker. Stays as the iPhone
-  path. The anchor feature (20 s GPS averaging) is still **not
-  field-tested**.
-- **v2 (WebXR / SLAM)** — new this session. **Phase 1 done and
-  field-verified**: user's Android phone runs the immersive-ar session and
-  the curtain stays rock-solid while walking around ("works great").
-  Currently the curtain is placed at a **fixed spot 3 m in front** of the
-  session-start pose — georeferencing is Phase 2, the immediate next step.
+- **v1 (sensor AR)** — GPS + compass + gyro. Complete; iPhone path.
+  Anchor feature still not field-tested.
+- **v2 (WebXR / SLAM)** — **Phase 2 (georeferencing) is built, deployed,
+  and field-tested: "works great."** One issue found in the field — the
+  curtain sat ~phone-height too high (local-floor's y=0 landed at the
+  device, not the ground). Fixed the same day (commit `68f0bfc`,
+  layered ground estimate, see below); **the fix is deployed but not yet
+  re-tested in the field** — that's the immediate next validation.
 
-Approved plan for the WebXR track:
-`C:\Users\piotr\.claude\plans\abstract-pondering-sunset.md` (phases,
-risks, alignment math rationale).
+## How XR mode works now (all in `web/src/xrMode.js` + `main.js`)
 
-## Done this session
+1. Two-tap start: tap 1 runs OrientationTracker + GeoTracker on the
+   start screen (button shows live `GPS ±Xm · H°`); tap 2 freezes
+   heading + position and requests the immersive-ar session.
+   "test placement" button fakes standing 3 m south of the profile
+   start (real compass) for at-home testing.
+2. First XR frame: `alignXr()` compares the captured compass heading
+   with the camera yaw inside XR space and calls
+   `EnuFrame.setAlignment(heading, userEnu, cameraXZ)`; the profile
+   group is then placed via `applyToGroup(group, posOffset, groundY)`.
+3. Ground (the field-found fix): groundY starts at camera y − phone
+   height ('estimate'), auto-snaps once to the first hit-test result
+   >0.8 m below the camera ('auto'), manual ⏚ set-ground overrides
+   ('manual'); tracked in `state.xrGroundSource`.
+4. Gestures in XR: 1-finger rotates `enuFrame.userHeadingOffsetDeg`
+   (pivot = session-start point), 2-finger shifts `state.xrPosOffset`
+   in ENU (drag converted with `xrDirToEnu`). Persist per profile under
+   `gprar:<name>:xr` (separate from v1 offsets).
+5. Hit-test reticle (amber ring) follows the center ray; anchor button
+   and phone-height slider are hidden in XR mode.
 
-1. Profile data: converted `_coor_recalc.sgy` (EPSG:32634; converter
-   already supported it via `--epsg`), then restored the original
-   (EPSG:25834) alongside it. Note: the recalc variant is ~1.3 km away
-   and 10.76 m vs 17.97 m — genuinely different coordinates.
-2. **Profile picker** on the start screen: lists manifest profiles,
-   labels each with distance from a one-shot GPS fix, auto-selects the
-   nearest unless the user picked manually. Switch tears down and
-   rebuilds curtain/minimap/settings (settings were already per-profile).
-3. **WebXR Phase 1** (`web/src/xrMode.js`): feature-detected
-   "Start AR (SLAM · WebXR)" button; immersive-ar session with
-   `local-floor` + `hit-test` required, `dom-overlay` + `anchors`
-   optional (overlay root = document.body, keeps existing HUD/controls);
-   render loop moved to `renderer.setAnimationLoop`; `EnuFrame` pure-math
-   ENU↔XR mapping, 11 headless Node checks pass (round-trips, heading,
-   three.js group-transform equivalence).
+`node web/test/enuframe.test.mjs` — 17 headless checks on the mapping
+math (round-trips, pivots, group-transform equivalence). Run after any
+xrMode.js change.
 
-## Next: WebXR Phase 2 (georeferencing) — design already settled
+## Next steps
 
-1. **Pre-session capture** (WebXR may suppress deviceorientation once
-   immersive): run `OrientationTracker` + `GeoTracker` briefly on the
-   start screen; show accuracy; user taps to place when happy.
-2. `EnuFrame.setAlignment(headingDeg, userEnu)` — heading = compass
-   heading the phone faces at session start (XR −z), userEnu = GPS
-   position relative to profile anchor. Then
-   `enuFrame.applyToGroup(profileGroup, groundY)`.
-3. Ground: `local-floor` puts y=0 at estimated floor; refine with a
-   hit-test reticle ("tap ground to set profile top") — replaces the
-   phone-height slider (already hidden in XR mode).
-4. Gestures: port 1-finger rotate / 2-finger shift to the dom-overlay
-   root (current handlers are on the canvas and guarded to mode==='ar').
-   Rotation must pivot around the user's position. Persist under
-   settingsKey + `:xr` suffix.
-5. For at-home testing add a temporary "place here" debug override
-   (profile would otherwise be far away).
-6. Phase 3 after: HUD tracking-state chip, README/docs. Phase 4 ideas:
-   `depth-sensing` occlusion, anchors persistence, auto re-place.
+1. **Field re-test of the ground fix** (user drives; expect profile top
+   at the ground, curtain going down into the subsurface).
+2. **Phase 3 polish**: tracking-state HUD (session `visibilitychange` /
+   tracking-loss warning), README section on XR mode, maybe show
+   ground-source in a chip.
+3. **Projects → profiles hierarchy** (user request): manifest lists
+   projects (name + center), each with its own profile set; two-step
+   picker; converter grows a `--project` arg.
+4. Phase 4 ideas: `depth-sensing` occlusion, anchors API, auto re-place
+   from GPS when far off, v1 anchor field test.
 
-Also queued (user request): **projects → profiles hierarchy** — manifest
-lists projects (name + center), each with its own profile set; two-step
-picker; converter grows a `--project` arg. Slot after XR Phase 2.
+Approved plan file (phases, risks, math rationale):
+`C:\Users\piotr\.claude\plans\abstract-pondering-sunset.md`
 
 ## Gotchas learned (cumulative)
 
+- **local-floor y=0 is not trustworthy outdoors** — on the user's phone
+  it sat at device height. Never assume floor=0; use the layered ground
+  estimate (already implemented).
+- Compass heading must be captured BEFORE the immersive session
+  (deviceorientation may stop once immersive) — hence the two-tap flow.
 - Embedded preview tab is usually `hidden` → rAF suspended → HUD frozen,
   `preview_screenshot` can time out. Verify via DOM/eval instead.
-- `.panel button { display: block }` in style.css overrides the `hidden`
-  attribute — `.panel button[hidden] { display: none }` rule added; same
-  trap applies to any new hidden-by-attribute element.
+- `.panel button { display: block }` overrides the `hidden` attribute —
+  a `.panel button[hidden]` rule exists; same trap for new elements.
 - `preview_click` can land before `loadProfile()` enables buttons — poll
   `!btn.disabled` via eval.
 - WebXR is untestable on desktop (isSessionSupported → false): test on
-  the phone via LAN https (`npm run dev:https`, accept cert) or the live
-  site; `chrome://inspect` over USB for console.
-- WebFetch/curl of the GitHub API caches ~15 min — add a junk query param
-  when polling workflow runs.
-- User's PC: Miniconda Python 3.6.5 (`python`, no py launcher), Node 24,
-  repo-local git identity, no `gh` CLI (plain HTTPS push auth).
+  the phone via the live site (deploy ~1 min) or LAN https; USB
+  `chrome://inspect` for console.
+- GitHub API polling: add a junk query param (cache ~15 min); Actions
+  runs can sit in "queued" for a while — don't assume failure.
+- User's PC: Miniconda Python 3.6.5 (`python`), Node 24, repo-local git
+  identity, no `gh` CLI.

@@ -42,8 +42,15 @@ professional, iPhone user, develops on Windows — that's why web AR, not native
     anchored (position hard-locked, gyro-only).
   - `xrMode.js` — WebXR (SLAM) mode: immersive-ar session setup
     (local-floor + hit-test required, dom-overlay optional) and `EnuFrame`,
-    a pure-math ENU↔XR-local mapping (headlessly testable in Node).
-    Feature-detected "Start AR (SLAM · WebXR)" button — Android Chrome only.
+    a pure-math ENU↔XR-local mapping with alignment correspondence
+    (compass heading + GPS↔XR position), manual heading offset, and
+    xrDirToEnu for gestures. Feature-detected "Start AR (SLAM · WebXR)"
+    button — Android Chrome only. XR start is two taps: capture
+    compass+GPS on the start screen, then freeze + enter session;
+    alignment happens on the first XR frame (captured heading vs camera
+    yaw in XR). Ground: estimate (camera y − phone height) → auto-snap to
+    first hit-test >0.8 m below camera → manual ⏚ set-ground. XR
+    calibration persists per profile under `gprar:<name>:xr`.
   - `main.js` — orchestration, profile picker (nearest by one-shot GPS
     auto-selected), calibration gestures (1-finger = heading, 2-finger =
     profile shift), localStorage persistence per profile, render loop via
@@ -62,7 +69,8 @@ professional, iPhone user, develops on Windows — that's why web AR, not native
   length 17.97 m; eyeball preview.png.
 - GeoTracker logic can be tested headlessly in Node (stub `navigator`,
   `window`, `screen` globals, import `web/src/pose.js`, drive `update(dt)`).
-  `EnuFrame` (xrMode.js) is pure math — import and test directly, no stubs.
+- `node web/test/enuframe.test.mjs` — 17 checks on the ENU↔XR math; run
+  after any xrMode.js change.
 - WebXR can't run on desktop: XR mode is only testable on the Android phone
   (LAN https or the live Pages site; `chrome://inspect` over USB for console).
 - The embedded preview panel's tab is often `hidden` → requestAnimationFrame
@@ -73,11 +81,12 @@ professional, iPhone user, develops on Windows — that's why web AR, not native
 
 ## Known limitations / open ends
 
-- **WebXR mode is Phase 1 only**: curtain is placed at a fixed spot 3 m in
-  front of the session-start pose — not georeferenced yet. Phase 2 (next):
-  pre-session GPS+compass capture → `EnuFrame.setAlignment`, hit-test
-  ground set, calibration gestures on the dom-overlay root, settings under
-  a `:xr` key suffix. Full plan: HANDOVER.md.
+- **WebXR mode is fully georeferenced (Phase 2 done)**; field status: the
+  flow "works great", the vertical ground fix (local-floor y=0 landed at
+  phone height on the user's device) is deployed but awaiting re-test.
+  Phase 3 (polish/docs) and Phase 4 ideas (depth-sensing occlusion,
+  anchors) in HANDOVER.md. "test placement" button on the capture screen
+  fakes standing 3 m south of the profile start for at-home testing.
 - v1 sensor path verified in the field once (works); gyro-only orientation
   may drift over minutes while anchored — auto compass re-sync is a
   candidate feature. Anchor feature itself not yet field-tested.
