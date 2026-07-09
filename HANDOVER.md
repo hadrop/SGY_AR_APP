@@ -1,51 +1,80 @@
-# Session handover — 2026-07-09
+# Session handover — 2026-07-09 (evening)
 
 ## Where the project stands
 
-Everything planned for v1 is **built, deployed, and field-tested once**.
 Live app: **https://hadrop.github.io/SGY_AR_APP/** (auto-deploys from
-master via `.github/workflows/deploy.yml`; repo hadrop/SGY_AR_APP).
+master; repo hadrop/SGY_AR_APP). Two tracks:
 
-User feedback from first field test: "works very good for 1st try", but the
-profile drifted with GPS noise → fixed the same day with the anchor feature
-(commit `bc95f3c`): 20 s accuracy-weighted GPS averaging that hard-locks the
-camera position, plus a 1.5 m deadband in follow mode. Logic verified
-headlessly in Node (jitter → zero drift, anchored → immune to GPS noise);
-**not yet field-tested** — that's the immediate next validation step.
+- **v1 (sensor AR)** — GPS + compass + gyro. Complete, field-tested,
+  untouched this session except the profile picker. Stays as the iPhone
+  path. The anchor feature (20 s GPS averaging) is still **not
+  field-tested**.
+- **v2 (WebXR / SLAM)** — new this session. **Phase 1 done and
+  field-verified**: user's Android phone runs the immersive-ar session and
+  the curtain stays rock-solid while walking around ("works great").
+  Currently the curtain is placed at a **fixed spot 3 m in front** of the
+  session-start pose — georeferencing is Phase 2, the immediate next step.
 
-## What exists
+Approved plan for the WebXR track:
+`C:\Users\piotr\.claude\plans\abstract-pondering-sunset.md` (phases,
+risks, alignment math rationale).
 
-- `converter/convert_sgy.py` — stdlib-only SEG-Y converter (see CLAUDE.md
-  for the asset format). Verified against the sample file; UTM inverse
-  round-trips sub-mm.
-- `web/` — the AR viewer (Vite + Three.js). Desktop debug mode for PC
-  development; AR mode uses camera + gyro/compass + GPS with manual
-  calibration gestures and the anchor button.
-- README.md — user-facing usage, phone testing, deploy, field checklist.
-- CLAUDE.md — constraints, domain facts, architecture, verification recipes.
-- Memory files (auto-memory dir) — isolation constraint + project decisions.
+## Done this session
 
-## Likely next steps (none committed to)
+1. Profile data: converted `_coor_recalc.sgy` (EPSG:32634; converter
+   already supported it via `--epsg`), then restored the original
+   (EPSG:25834) alongside it. Note: the recalc variant is ~1.3 km away
+   and 10.76 m vs 17.97 m — genuinely different coordinates.
+2. **Profile picker** on the start screen: lists manifest profiles,
+   labels each with distance from a one-shot GPS fix, auto-selects the
+   nearest unless the user picked manually. Switch tears down and
+   rebuilds curtain/minimap/settings (settings were already per-profile).
+3. **WebXR Phase 1** (`web/src/xrMode.js`): feature-detected
+   "Start AR (SLAM · WebXR)" button; immersive-ar session with
+   `local-floor` + `hit-test` required, `dom-overlay` + `anchors`
+   optional (overlay root = document.body, keeps existing HUD/controls);
+   render loop moved to `renderer.setAnimationLoop`; `EnuFrame` pure-math
+   ENU↔XR mapping, 11 headless Node checks pass (round-trips, heading,
+   three.js group-transform equivalence).
 
-1. **Field-test the anchor feature** (user will report).
-2. Auto compass re-sync while anchored, if gyro drift over minutes annoys
-   the user (a 1-finger drag already corrects it manually).
-3. Multi-profile support: load nearest profile instead of `profiles[0]`;
-   the manifest already stores anchor + length per profile.
-4. If client data confidentiality comes up: move to Netlify + private repo.
-5. Possible later: WebXR path on Android for true SLAM tracking; native
-   iOS only if a Mac appears.
+## Next: WebXR Phase 2 (georeferencing) — design already settled
 
-## Gotchas learned this session
+1. **Pre-session capture** (WebXR may suppress deviceorientation once
+   immersive): run `OrientationTracker` + `GeoTracker` briefly on the
+   start screen; show accuracy; user taps to place when happy.
+2. `EnuFrame.setAlignment(headingDeg, userEnu)` — heading = compass
+   heading the phone faces at session start (XR −z), userEnu = GPS
+   position relative to profile anchor. Then
+   `enuFrame.applyToGroup(profileGroup, groundY)`.
+3. Ground: `local-floor` puts y=0 at estimated floor; refine with a
+   hit-test reticle ("tap ground to set profile top") — replaces the
+   phone-height slider (already hidden in XR mode).
+4. Gestures: port 1-finger rotate / 2-finger shift to the dom-overlay
+   root (current handlers are on the canvas and guarded to mode==='ar').
+   Rotation must pivot around the user's position. Persist under
+   settingsKey + `:xr` suffix.
+5. For at-home testing add a temporary "place here" debug override
+   (profile would otherwise be far away).
+6. Phase 3 after: HUD tracking-state chip, README/docs. Phase 4 ideas:
+   `depth-sensing` occlusion, anchors persistence, auto re-place.
 
-- Embedded preview panel tab is usually `hidden` → rAF suspended → HUD/chips
-  don't update; verify logic in Node instead of fighting the preview.
-- `preview_click` sometimes lands before `loadProfile()` enables buttons —
-  poll for `!btn.disabled` or click via eval.
-- GitHub Pages had to be enabled manually once (Settings → Pages → Source:
-  GitHub Actions); the workflow token cannot enable it itself.
-- User's PC: only Miniconda Python 3.6.5 (no py launcher), Node 24, git
-  identity repo-local only. `gh` CLI is NOT installed (user chose plain
-  HTTPS push auth via credential manager).
-- WebFetch caches GitHub API responses ~15 min — add a junk query param
+Also queued (user request): **projects → profiles hierarchy** — manifest
+lists projects (name + center), each with its own profile set; two-step
+picker; converter grows a `--project` arg. Slot after XR Phase 2.
+
+## Gotchas learned (cumulative)
+
+- Embedded preview tab is usually `hidden` → rAF suspended → HUD frozen,
+  `preview_screenshot` can time out. Verify via DOM/eval instead.
+- `.panel button { display: block }` in style.css overrides the `hidden`
+  attribute — `.panel button[hidden] { display: none }` rule added; same
+  trap applies to any new hidden-by-attribute element.
+- `preview_click` can land before `loadProfile()` enables buttons — poll
+  `!btn.disabled` via eval.
+- WebXR is untestable on desktop (isSessionSupported → false): test on
+  the phone via LAN https (`npm run dev:https`, accept cert) or the live
+  site; `chrome://inspect` over USB for console.
+- WebFetch/curl of the GitHub API caches ~15 min — add a junk query param
   when polling workflow runs.
+- User's PC: Miniconda Python 3.6.5 (`python`, no py launcher), Node 24,
+  repo-local git identity, no `gh` CLI (plain HTTPS push auth).
