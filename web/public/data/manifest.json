@@ -8,6 +8,15 @@
     "lon": 19.847821129750223
    },
    "length_m": 10.76
+  },
+  {
+   "name": "TLAB25_007_BIG_Parking_1B1X_TIME",
+   "dir": "data/profiles/TLAB25_007_BIG_Parking_1B1X_TIME",
+   "anchor": {
+    "lat": 49.986609599054596,
+    "lon": 19.838789243180017
+   },
+   "length_m": 17.97
   }
  ]
 }

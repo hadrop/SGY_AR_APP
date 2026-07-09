@@ -4,6 +4,7 @@ import { DebugControls } from './debugControls.js';
 import { Minimap } from './minimap.js';
 import { startCameraFeed, OrientationTracker, GeoTracker } from './pose.js';
 import { EnuFrame, isXrSupported, startXrSession } from './xrMode.js';
+import { latLonToEnu } from './geo.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -47,9 +48,32 @@ scene.add(grid);
 
 // ------------------------------------------------------------- data load
 
-async function loadProfile() {
-  const manifest = await (await fetch('data/manifest.json')).json();
-  const entry = manifest.profiles[0]; // v1: single/first profile
+let manifest = null;
+
+async function loadManifest() {
+  manifest = await (await fetch('data/manifest.json')).json();
+  const sel = $('profile-pick');
+  sel.innerHTML = '';
+  manifest.profiles.forEach((p, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = `${p.name} (${p.length_m} m)`;
+    sel.appendChild(opt);
+  });
+  $('profile-pick-row').hidden = manifest.profiles.length < 2;
+  await loadProfile(manifest.profiles[0]);
+  annotateDistances();
+}
+
+async function loadProfile(entry) {
+  for (const id of ['btn-ar', 'btn-xr', 'btn-debug']) $(id).disabled = true;
+  if (state.profileGroup) {
+    scene.remove(state.profileGroup);
+    state.curtain.geometry.dispose();
+    state.curtain.material.uniforms.uMap.value.dispose();
+    state.curtain.material.dispose();
+  }
+
   const meta = await (await fetch(`${entry.dir}/meta.json`)).json();
   const texture = await new THREE.TextureLoader()
     .loadAsync(`${entry.dir}/amplitude.png`);
@@ -69,6 +93,35 @@ async function loadProfile() {
   $('btn-xr').disabled = false;
   $('btn-debug').disabled = false;
 }
+
+// One-shot GPS fix on the start screen: label each profile with its
+// distance and auto-select the nearest unless the user already chose.
+function annotateDistances() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition((pos) => {
+    const { latitude, longitude } = pos.coords;
+    const sel = $('profile-pick');
+    let best = 0, bestD = Infinity;
+    manifest.profiles.forEach((p, i) => {
+      const { e, n } = latLonToEnu(
+        latitude, longitude, p.anchor.lat, p.anchor.lon);
+      const d = Math.hypot(e, n);
+      sel.options[i].textContent = `${p.name} — ${d < 1000
+        ? d.toFixed(0) + ' m' : (d / 1000).toFixed(1) + ' km'} away`;
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    if (!state._userPickedProfile && +sel.value !== best && !state.mode) {
+      sel.value = String(best);
+      loadProfile(manifest.profiles[best]);
+    }
+  }, () => { /* no fix: keep manifest order */ },
+  { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+}
+
+$('profile-pick').addEventListener('change', () => {
+  state._userPickedProfile = true;
+  loadProfile(manifest.profiles[+$('profile-pick').value]);
+});
 
 // ------------------------------------------------------- settings persist
 
@@ -380,7 +433,7 @@ function animate() {
   renderer.render(scene, camera);
 }
 
-loadProfile().catch((err) => {
+loadManifest().catch((err) => {
   $('profile-info').textContent = 'Failed to load profile: ' + err.message;
 });
 renderer.setAnimationLoop(animate);  // rAF replacement that also runs in XR

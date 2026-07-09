@@ -62,5 +62,6 @@ professional, iPhone user, develops on Windows — that's why web AR, not native
 - No occlusion with real ground (web has no depth sensing).
 - Repo is public → profile data is publicly reachable; switch to
   Netlify + private repo if client data ever goes in.
-- v1 shows only the first profile in the manifest; nearest-profile
-  selection is an obvious next step for multi-profile sites.
+- Start screen has a profile picker (nearest profile auto-selected from a
+  one-shot GPS fix). Planned next level: "projects" grouping — user picks
+  a project, then a profile within it.

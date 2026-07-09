@@ -96,6 +96,25 @@ html, body {
 }
 .panel button:disabled { opacity: 0.4; }
 .panel button[hidden] { display: none; }
+#profile-pick-row {
+  display: block;
+  text-align: left;
+  font-size: 13px;
+  opacity: 0.9;
+  margin-bottom: 12px;
+}
+#profile-pick-row[hidden] { display: none; }
+#profile-pick {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px;
+  font-size: 14px;
+  border-radius: 10px;
+  border: 1px solid #30363d;
+  background: #21262d;
+  color: #e6edf3;
+}
 .panel button#btn-debug { background: #30363d; }
 .hint { font-size: 12px; opacity: 0.6; }
 
