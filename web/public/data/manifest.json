@@ -1,13 +1,13 @@
 {
  "profiles": [
   {
-   "name": "TLAB25_007_BIG_Parking_1B1X_TIME",
-   "dir": "data/profiles/TLAB25_007_BIG_Parking_1B1X_TIME",
+   "name": "TLAB25_007_BIG_Parking_1B1X_TIME_coor_recalc",
+   "dir": "data/profiles/TLAB25_007_BIG_Parking_1B1X_TIME_coor_recalc",
    "anchor": {
-    "lat": 49.986609599054596,
-    "lon": 19.838789243180017
+    "lat": 49.99629251852347,
+    "lon": 19.847821129750223
    },
-   "length_m": 17.97
+   "length_m": 10.76
   }
  ]
 }
