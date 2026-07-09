@@ -19,7 +19,8 @@ const state = {
   enuFrame: null,       // ENU <-> XR-local mapping (XR mode only)
   xrCapture: null,      // pre-session compass+GPS capture (start screen)
   xrPosOffset: { e: 0, n: 0 },  // manual profile shift in XR mode (m, ENU)
-  xrGroundY: 0,         // XR y of the profile top (0 = local-floor floor)
+  xrGroundY: 0,         // XR y of the profile top (ground level)
+  xrGroundSource: null, // 'estimate' | 'auto' (hit-test) | 'manual'
   xrNeedsAlign: false,  // waiting for the first XR frame to align
   xrHeadingAtStart: 0,  // compass heading captured at the start tap
   xrUserEnu: null,      // GPS position captured at the start tap
@@ -338,6 +339,7 @@ function exitXr() {
   state.hitTestSource = null;
   state.xrNeedsAlign = false;
   state.xrGroundY = 0;
+  state.xrGroundSource = null;
   if (reticle) reticle.visible = false;
   state.profileGroup.visible = true;
   state.profileGroup.rotation.set(0, 0, 0);
@@ -456,6 +458,7 @@ for (const btn of document.querySelectorAll('#calib-row .cal')) {
 $('btn-ground').addEventListener('click', () => {
   if (state.mode !== 'xr' || state.lastHitY == null) return;
   state.xrGroundY = state.lastHitY;
+  state.xrGroundSource = 'manual';
   applyXrPlacement();
 });
 
@@ -595,6 +598,10 @@ function alignXr(frame) {
   const yawDeg = compassHeadingOf(q);  // same fwd/up convention both sides
   state.enuFrame.setAlignment(
     state.xrHeadingAtStart - yawDeg, state.xrUserEnu, { x: p.x, z: p.z });
+  // local-floor's y=0 can land at phone height instead of the ground;
+  // start from camera height minus phone height, refine via hit-test
+  state.xrGroundY = p.y - state.height;
+  state.xrGroundSource = 'estimate';
   applyXrPlacement();
   state.profileGroup.visible = true;
   state.xrNeedsAlign = false;
@@ -611,6 +618,14 @@ function updateReticle(frame) {
     reticle.position.set(p.x, p.y, p.z);
     reticle.visible = true;
     state.lastHitY = p.y;
+    // first hit well below the camera = the real ground; snap the
+    // profile top there once (manual "set ground" always wins)
+    if (state.xrGroundSource === 'estimate' &&
+        p.y < camera.position.y - 0.8) {
+      state.xrGroundY = p.y;
+      state.xrGroundSource = 'auto';
+      applyXrPlacement();
+    }
   } else {
     reticle.visible = false;
   }
