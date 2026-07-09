@@ -95,6 +95,7 @@ html, body {
   cursor: pointer;
 }
 .panel button:disabled { opacity: 0.4; }
+.panel button[hidden] { display: none; }
 .panel button#btn-debug { background: #30363d; }
 .hint { font-size: 12px; opacity: 0.6; }
 

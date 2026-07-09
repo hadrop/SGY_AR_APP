@@ -3,17 +3,19 @@ import { createCurtain } from './curtain.js';
 import { DebugControls } from './debugControls.js';
 import { Minimap } from './minimap.js';
 import { startCameraFeed, OrientationTracker, GeoTracker } from './pose.js';
+import { EnuFrame, isXrSupported, startXrSession } from './xrMode.js';
 
 const $ = (id) => document.getElementById(id);
 
 const state = {
-  mode: null,           // 'ar' | 'debug'
+  mode: null,           // 'ar' | 'xr' | 'debug'
   meta: null,
   curtain: null,
   profileGroup: null,
   minimap: null,
   orientation: null,
   geo: null,
+  enuFrame: null,       // ENU <-> XR-local mapping (XR mode only)
   debugControls: null,
   height: 1.6,          // phone height above ground (m)
   posOffset: { e: 0, n: 0 },  // manual profile shift (m)
@@ -64,6 +66,7 @@ async function loadProfile() {
     `${meta.n_traces} traces`;
   loadSettings();
   $('btn-ar').disabled = false;
+  $('btn-xr').disabled = false;
   $('btn-debug').disabled = false;
 }
 
@@ -109,6 +112,7 @@ function applyUniforms() {
 }
 
 function applyProfileOffset() {
+  if (state.mode === 'xr') return;  // EnuFrame owns the transform in XR
   state.profileGroup.position.set(
     state.posOffset.e, 0, -state.posOffset.n);
 }
@@ -133,6 +137,39 @@ async function startAr() {
   enterViewer('AR');
 }
 
+async function startXr() {
+  try {
+    state.enuFrame = new EnuFrame();
+    // Phase 1: fixed placement — profile start 3 m in front of the phone
+    state.enuFrame.setAlignment(0, { e: 0, n: -3 });
+    state.enuFrame.applyToGroup(state.profileGroup);
+    await startXrSession(renderer, {
+      overlayRoot: document.body,
+      onEnd: exitXr,
+    });
+  } catch (err) {
+    $('start-hint').textContent = 'WebXR error: ' + err.message;
+    return;
+  }
+  state.mode = 'xr';
+  renderer.setClearColor(0x000000, 0);
+  grid.visible = false;
+  enterViewer('XR');
+}
+
+function exitXr() {
+  if (state.mode !== 'xr') return;
+  state.mode = null;
+  state.profileGroup.rotation.set(0, 0, 0);
+  applyProfileOffset();
+  camera.position.set(0, state.height, 0);
+  camera.quaternion.identity();
+  camera.updateProjectionMatrix();
+  $('start-overlay').classList.remove('hidden');
+  $('hud').classList.remove('active');
+  $('controls').classList.remove('active');
+}
+
 function startDebug() {
   state.mode = 'debug';
   renderer.setClearColor(0x161b22, 1);
@@ -151,13 +188,19 @@ function enterViewer(label) {
   $('hud').classList.add('active');
   $('controls').classList.add('active');
   $('chip-mode').textContent = label;
+  // SLAM tracks true height; the manual phone-height slider is v1-only
+  $('ctl-height').parentElement.style.display =
+    state.mode === 'xr' ? 'none' : '';
   applyProfileOffset();
   applyUniforms();
   updateAnchorButton();
 }
 
 $('btn-ar').addEventListener('click', startAr);
+$('btn-xr').addEventListener('click', startXr);
 $('btn-debug').addEventListener('click', startDebug);
+
+isXrSupported().then((ok) => { $('btn-xr').hidden = !ok; });
 
 // ------------------------------------------------------------ UI bindings
 
@@ -282,6 +325,10 @@ function updateHud() {
         ? 'GPS error' : 'GPS acquiring…';
       gpsChip.className = 'chip warn';
     }
+  } else if (state.mode === 'xr') {
+    user = state.enuFrame.xrToEnu(camera.position.x, camera.position.z);
+    gpsChip.textContent = 'SLAM tracking';
+    gpsChip.className = 'chip good';
   } else if (state.mode === 'debug') {
     user = { e: camera.position.x, n: -camera.position.z };
     gpsChip.textContent = 'GPS simulated';
@@ -298,7 +345,9 @@ function updateHud() {
   }
 
   const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-  const heading = Math.atan2(fwd.x, -fwd.z);
+  const heading = state.mode === 'xr'
+    ? state.enuFrame.enuHeadingOfXrDir(fwd.x, fwd.z)
+    : Math.atan2(fwd.x, -fwd.z);
   state.minimap.draw(user, heading);
   updateAnchorButton();
 }
@@ -309,7 +358,6 @@ const clock = new THREE.Clock();
 let hudTimer = 0;
 
 function animate() {
-  requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.1);
 
   if (state.mode === 'ar') {
@@ -322,6 +370,7 @@ function animate() {
     state.debugControls.update(dt);
     camera.position.y = Math.max(camera.position.y, 0.2);
   }
+  // 'xr': three's WebXRManager drives the camera from SLAM poses
 
   hudTimer += dt;
   if (state.mode && hudTimer > 0.2) {
@@ -334,4 +383,4 @@ function animate() {
 loadProfile().catch((err) => {
   $('profile-info').textContent = 'Failed to load profile: ' + err.message;
 });
-animate();
+renderer.setAnimationLoop(animate);  // rAF replacement that also runs in XR
