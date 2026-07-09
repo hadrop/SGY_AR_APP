@@ -96,6 +96,15 @@ html, body {
 }
 .panel button:disabled { opacity: 0.4; }
 .panel button[hidden] { display: none; }
+.panel button#btn-xr-fake {
+  background: #30363d;
+  font-size: 13px;
+  padding: 10px;
+}
+.panel button#btn-xr-fake.active {
+  background: #1f6feb;
+  outline: 1px solid #7db4ff;
+}
 #profile-pick-row {
   display: block;
   text-align: left;

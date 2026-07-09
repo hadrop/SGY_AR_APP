@@ -17,6 +17,15 @@ const state = {
   orientation: null,
   geo: null,
   enuFrame: null,       // ENU <-> XR-local mapping (XR mode only)
+  xrCapture: null,      // pre-session compass+GPS capture (start screen)
+  xrPosOffset: { e: 0, n: 0 },  // manual profile shift in XR mode (m, ENU)
+  xrGroundY: 0,         // XR y of the profile top (0 = local-floor floor)
+  xrNeedsAlign: false,  // waiting for the first XR frame to align
+  xrHeadingAtStart: 0,  // compass heading captured at the start tap
+  xrUserEnu: null,      // GPS position captured at the start tap
+  xrSession: null,
+  hitTestSource: null,
+  lastHitY: null,
   debugControls: null,
   height: 1.6,          // phone height above ground (m)
   posOffset: { e: 0, n: 0 },  // manual profile shift (m)
@@ -46,6 +55,18 @@ const grid = new THREE.GridHelper(40, 40, 0x3a4450, 0x232a32);
 grid.visible = false;
 scene.add(grid);
 
+// hit-test reticle: marks where the center ray meets a real surface (XR)
+let reticle = null;
+function ensureReticle() {
+  if (reticle) return;
+  reticle = new THREE.Mesh(
+    new THREE.RingGeometry(0.12, 0.16, 32).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial(
+      { color: 0xffc02e, transparent: true, opacity: 0.9 }));
+  reticle.visible = false;
+  scene.add(reticle);
+}
+
 // ------------------------------------------------------------- data load
 
 let manifest = null;
@@ -66,6 +87,7 @@ async function loadManifest() {
 }
 
 async function loadProfile(entry) {
+  stopXrCapture();  // capture is anchored to the old profile
   for (const id of ['btn-ar', 'btn-xr', 'btn-debug']) $(id).disabled = true;
   if (state.profileGroup) {
     scene.remove(state.profileGroup);
@@ -125,18 +147,34 @@ $('profile-pick').addEventListener('change', () => {
 
 // ------------------------------------------------------- settings persist
 
-function settingsKey() { return `gprar:${state.meta.name}`; }
+function settingsKey() {
+  return `gprar:${state.meta.name}` + (state.mode === 'xr' ? ':xr' : '');
+}
 
 function saveSettings() {
+  const xr = state.mode === 'xr';
   const o = state.orientation;
   localStorage.setItem(settingsKey(), JSON.stringify({
     palette: +$('ctl-palette').value,
     gain: +$('ctl-gain').value,
     opacity: +$('ctl-opacity').value,
     height: state.height,
-    headingOffset: o ? o.userHeadingOffsetDeg : 0,
-    posOffset: state.posOffset,
+    headingOffset: xr ? state.enuFrame.userHeadingOffsetDeg
+                      : (o ? o.userHeadingOffsetDeg : 0),
+    posOffset: xr ? state.xrPosOffset : state.posOffset,
   }));
+}
+
+// XR calibration is per profile but separate from the v1 offsets
+function loadXrCalibration() {
+  state.xrPosOffset = { e: 0, n: 0 };
+  state.enuFrame.userHeadingOffsetDeg = 0;
+  try {
+    const s = JSON.parse(
+      localStorage.getItem(`gprar:${state.meta.name}:xr`) || '{}');
+    state.enuFrame.userHeadingOffsetDeg = s.headingOffset ?? 0;
+    state.xrPosOffset = s.posOffset ?? { e: 0, n: 0 };
+  } catch { /* ignore corrupt settings */ }
 }
 
 function loadSettings() {
@@ -190,18 +228,96 @@ async function startAr() {
   enterViewer('AR');
 }
 
+// compass heading (deg, 0 = N) the camera faces, from a world quaternion
+// (v1 world frame: -z = north). Falls back to the screen-up direction
+// when the phone is pitched steeply down at the ground.
+const _hv = new THREE.Vector3();
+function compassHeadingOf(q) {
+  _hv.set(0, 0, -1).applyQuaternion(q);
+  if (Math.hypot(_hv.x, _hv.z) < 0.3) _hv.set(0, 1, 0).applyQuaternion(q);
+  return (Math.atan2(_hv.x, -_hv.z) * 180 / Math.PI + 360) % 360;
+}
+
+// XR start is two taps: tap 1 starts the compass+GPS capture on the
+// start screen (WebXR may suppress deviceorientation once immersive);
+// tap 2 freezes both readings and enters the session.
+function startXrCapture() {
+  const cap = state.xrCapture = {
+    orientation: new OrientationTracker(),
+    geo: new GeoTracker(state.meta.anchor.lat, state.meta.anchor.lon),
+    fake: false,
+    timer: 0,
+  };
+  cap.orientation.start().catch(() => {});
+  try { cap.geo.start(); } catch { /* no geolocation: fake mode only */ }
+  $('btn-xr-fake').hidden = false;
+  cap.timer = setInterval(() => {
+    const gps = cap.fake ? 'test placement'
+      : cap.geo.hasFix ? `GPS ±${cap.geo.accuracy.toFixed(0)} m`
+      : 'GPS acquiring…';
+    const h = cap.orientation.hasReading
+      ? ` · ${compassHeadingOf(cap.orientation.deviceQuaternion).toFixed(0)}°`
+      : '';
+    $('btn-xr').textContent = `📍 Place & start — ${gps}${h}`;
+  }, 500);
+  $('start-hint').textContent =
+    'Stand at your reference point, hold the phone upright, tap again.';
+}
+
+function stopXrCapture(restoreButton = true) {
+  const cap = state.xrCapture;
+  if (!cap) return;
+  clearInterval(cap.timer);
+  cap.orientation.stop();
+  cap.geo.stop();
+  state.xrCapture = null;
+  $('btn-xr-fake').hidden = true;
+  if (restoreButton) {
+    $('btn-xr').textContent = 'Start AR (SLAM · WebXR)';
+    $('start-hint').textContent = '';
+  }
+}
+
 async function startXr() {
+  if (!state.xrCapture) return startXrCapture();
+  const cap = state.xrCapture;
+  if (!cap.orientation.hasReading) {
+    $('start-hint').textContent = 'Waiting for the compass…';
+    return;
+  }
+  if (!cap.fake && !cap.geo.hasFix) {
+    $('start-hint').textContent =
+      'Waiting for a GPS fix… (or tap "test placement")';
+    return;
+  }
+  // freeze readings as late as possible — the phone barely moves between
+  // this tap and the first XR frame, where the yaw is compared
+  const headingDeg = compassHeadingOf(cap.orientation.deviceQuaternion);
+  const p0 = state.meta.points_en[0];
+  const userEnu = cap.fake
+    ? { e: p0[0], n: p0[1] - 3 }        // pretend: 3 m south of the start
+    : { ...cap.geo.raw };
+  stopXrCapture(false);
   try {
     state.enuFrame = new EnuFrame();
-    // Phase 1: fixed placement — profile start 3 m in front of the phone
-    state.enuFrame.setAlignment(0, { e: 0, n: -3 });
-    state.enuFrame.applyToGroup(state.profileGroup);
-    await startXrSession(renderer, {
+    loadXrCalibration();
+    state.xrHeadingAtStart = headingDeg;
+    state.xrUserEnu = userEnu;
+    state.xrNeedsAlign = true;
+    state.lastHitY = null;
+    state.profileGroup.visible = false;   // until the first-frame alignment
+    state.xrSession = await startXrSession(renderer, {
       overlayRoot: document.body,
       onEnd: exitXr,
     });
+    state.xrSession.requestReferenceSpace('viewer')
+      .then((vs) => state.xrSession.requestHitTestSource({ space: vs }))
+      .then((src) => { state.hitTestSource = src; })
+      .catch(() => { /* no hit-test: ground stays at local-floor y=0 */ });
   } catch (err) {
     $('start-hint').textContent = 'WebXR error: ' + err.message;
+    $('btn-xr').textContent = 'Start AR (SLAM · WebXR)';
+    state.profileGroup.visible = true;
     return;
   }
   state.mode = 'xr';
@@ -210,14 +326,27 @@ async function startXr() {
   enterViewer('XR');
 }
 
+function applyXrPlacement() {
+  state.enuFrame.applyToGroup(
+    state.profileGroup, state.xrPosOffset, state.xrGroundY);
+}
+
 function exitXr() {
   if (state.mode !== 'xr') return;
   state.mode = null;
+  state.xrSession = null;
+  state.hitTestSource = null;
+  state.xrNeedsAlign = false;
+  state.xrGroundY = 0;
+  if (reticle) reticle.visible = false;
+  state.profileGroup.visible = true;
   state.profileGroup.rotation.set(0, 0, 0);
   applyProfileOffset();
   camera.position.set(0, state.height, 0);
   camera.quaternion.identity();
   camera.updateProjectionMatrix();
+  $('btn-xr').textContent = 'Start AR (SLAM · WebXR)';
+  $('start-hint').textContent = '';
   $('start-overlay').classList.remove('hidden');
   $('hud').classList.remove('active');
   $('controls').classList.remove('active');
@@ -244,6 +373,7 @@ function enterViewer(label) {
   // SLAM tracks true height; the manual phone-height slider is v1-only
   $('ctl-height').parentElement.style.display =
     state.mode === 'xr' ? 'none' : '';
+  $('btn-ground').hidden = state.mode !== 'xr';
   applyProfileOffset();
   applyUniforms();
   updateAnchorButton();
@@ -296,25 +426,52 @@ function updateAnchorButton() {
 }
 
 for (const btn of document.querySelectorAll('#calib-row .cal')) {
-  if (btn.id === 'btn-anchor') continue;
+  if (btn.id === 'btn-anchor' || btn.id === 'btn-ground') continue;
   btn.addEventListener('click', () => {
+    const xr = state.mode === 'xr';
     const o = state.orientation;
     if (btn.dataset.cal === 'reset') {
-      state.posOffset = { e: 0, n: 0 };
-      if (o) { o.userHeadingOffsetDeg = 0; o.recalibrateCompass(); }
-      applyProfileOffset();
-    } else if (o) {
-      o.userHeadingOffsetDeg += btn.dataset.cal === 'rot+' ? 2 : -2;
+      if (xr) {
+        state.xrPosOffset = { e: 0, n: 0 };
+        state.enuFrame.userHeadingOffsetDeg = 0;
+        applyXrPlacement();
+      } else {
+        state.posOffset = { e: 0, n: 0 };
+        if (o) { o.userHeadingOffsetDeg = 0; o.recalibrateCompass(); }
+        applyProfileOffset();
+      }
+    } else {
+      const d = btn.dataset.cal === 'rot+' ? 2 : -2;
+      if (xr) {
+        state.enuFrame.userHeadingOffsetDeg += d;
+        applyXrPlacement();
+      } else if (o) {
+        o.userHeadingOffsetDeg += d;
+      }
     }
     saveSettings();
   });
 }
 
+$('btn-ground').addEventListener('click', () => {
+  if (state.mode !== 'xr' || state.lastHitY == null) return;
+  state.xrGroundY = state.lastHitY;
+  applyXrPlacement();
+});
+
+$('btn-xr-fake').addEventListener('click', () => {
+  const cap = state.xrCapture;
+  if (!cap) return;
+  cap.fake = !cap.fake;
+  $('btn-xr-fake').classList.toggle('active', cap.fake);
+});
+
 // --------------------------------------------- touch calibration gestures
 
 let touchState = null;
+const gestureModes = new Set(['ar', 'xr']);
 renderer.domElement.addEventListener('touchstart', (e) => {
-  if (state.mode !== 'ar') return;
+  if (!gestureModes.has(state.mode)) return;
   touchState = {
     n: e.touches.length,
     x: avg(e.touches, 'clientX'),
@@ -322,24 +479,40 @@ renderer.domElement.addEventListener('touchstart', (e) => {
   };
 });
 renderer.domElement.addEventListener('touchmove', (e) => {
-  if (!touchState || state.mode !== 'ar') return;
+  if (!touchState || !gestureModes.has(state.mode)) return;
   e.preventDefault();
   const x = avg(e.touches, 'clientX');
   const y = avg(e.touches, 'clientY');
   const dx = x - touchState.x, dy = y - touchState.y;
+  const xr = state.mode === 'xr';
 
   if (e.touches.length === 1 && touchState.n === 1) {
     // rotate heading: full screen width ~ 40 degrees
-    state.orientation.userHeadingOffsetDeg += dx / window.innerWidth * 40;
+    const d = dx / window.innerWidth * 40;
+    if (xr) {
+      state.enuFrame.userHeadingOffsetDeg += d;
+      applyXrPlacement();
+    } else {
+      state.orientation.userHeadingOffsetDeg += d;
+    }
   } else if (e.touches.length >= 2) {
     // shift profile in camera-aligned ground axes
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
     fwd.y = 0; fwd.normalize();
     const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
     const k = 0.01; // meters per pixel
-    state.posOffset.e += right.x * dx * k - fwd.x * dy * k;
-    state.posOffset.n += -(right.z * dx * k - fwd.z * dy * k);
-    applyProfileOffset();
+    if (xr) {
+      // camera axes live in XR space; convert to ENU before offsetting
+      const f = state.enuFrame.xrDirToEnu(fwd.x, fwd.z);
+      const r = state.enuFrame.xrDirToEnu(right.x, right.z);
+      state.xrPosOffset.e += (r.e * dx - f.e * dy) * k;
+      state.xrPosOffset.n += (r.n * dx - f.n * dy) * k;
+      applyXrPlacement();
+    } else {
+      state.posOffset.e += right.x * dx * k - fwd.x * dy * k;
+      state.posOffset.n += -(right.z * dx * k - fwd.z * dy * k);
+      applyProfileOffset();
+    }
   }
   touchState.x = x; touchState.y = y; touchState.n = e.touches.length;
 }, { passive: false });
@@ -380,8 +553,8 @@ function updateHud() {
     }
   } else if (state.mode === 'xr') {
     user = state.enuFrame.xrToEnu(camera.position.x, camera.position.z);
-    gpsChip.textContent = 'SLAM tracking';
-    gpsChip.className = 'chip good';
+    gpsChip.textContent = state.xrNeedsAlign ? 'placing…' : 'SLAM tracking';
+    gpsChip.className = 'chip ' + (state.xrNeedsAlign ? 'warn' : 'good');
   } else if (state.mode === 'debug') {
     user = { e: camera.position.x, n: -camera.position.z };
     gpsChip.textContent = 'GPS simulated';
@@ -389,10 +562,11 @@ function updateHud() {
   }
 
   if (user && state.meta) {
+    const off = state.mode === 'xr' ? state.xrPosOffset : state.posOffset;
     let dMin = Infinity;
     for (const [pe, pn] of state.meta.points_en) {
-      dMin = Math.min(dMin, Math.hypot(pe + state.posOffset.e - user.e,
-                                       pn + state.posOffset.n - user.n));
+      dMin = Math.min(dMin, Math.hypot(pe + off.e - user.e,
+                                       pn + off.n - user.n));
     }
     distChip.textContent = `dist ${dMin.toFixed(1)} m`;
   }
@@ -410,7 +584,39 @@ function updateHud() {
 const clock = new THREE.Clock();
 let hudTimer = 0;
 
-function animate() {
+// Align the ENU frame on the first XR frame: the compass heading was
+// captured at the start tap; here we read where the camera actually is
+// (and which way it yaws) inside the fresh XR space and tie the two.
+function alignXr(frame) {
+  const pose = frame.getViewerPose(renderer.xr.getReferenceSpace());
+  if (!pose) return;
+  const p = pose.transform.position, o = pose.transform.orientation;
+  const q = new THREE.Quaternion(o.x, o.y, o.z, o.w);
+  const yawDeg = compassHeadingOf(q);  // same fwd/up convention both sides
+  state.enuFrame.setAlignment(
+    state.xrHeadingAtStart - yawDeg, state.xrUserEnu, { x: p.x, z: p.z });
+  applyXrPlacement();
+  state.profileGroup.visible = true;
+  state.xrNeedsAlign = false;
+}
+
+function updateReticle(frame) {
+  if (!state.hitTestSource) return;
+  ensureReticle();
+  const hits = frame.getHitTestResults(state.hitTestSource);
+  const pose = hits.length &&
+    hits[0].getPose(renderer.xr.getReferenceSpace());
+  if (pose) {
+    const p = pose.transform.position;
+    reticle.position.set(p.x, p.y, p.z);
+    reticle.visible = true;
+    state.lastHitY = p.y;
+  } else {
+    reticle.visible = false;
+  }
+}
+
+function animate(time, frame) {
   const dt = Math.min(clock.getDelta(), 0.1);
 
   if (state.mode === 'ar') {
@@ -422,8 +628,11 @@ function animate() {
   } else if (state.mode === 'debug') {
     state.debugControls.update(dt);
     camera.position.y = Math.max(camera.position.y, 0.2);
+  } else if (state.mode === 'xr' && frame) {
+    // camera itself is driven by three's WebXRManager from SLAM poses
+    if (state.xrNeedsAlign) alignXr(frame);
+    updateReticle(frame);
   }
-  // 'xr': three's WebXRManager drives the camera from SLAM poses
 
   hudTimer += dt;
   if (state.mode && hudTimer > 0.2) {

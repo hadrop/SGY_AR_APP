@@ -5,28 +5,44 @@
 // faced at that moment. SLAM keeps poses stable in this space; geography
 // enters only through the one-time alignment stored in EnuFrame.
 
+// rotate an ENU vector so its heading increases by deg (north -> east)
+function rotEN(e, n, deg) {
+  const a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  return { e: e * c + n * s, n: n * c - e * s };
+}
+
 // Maps ENU world coordinates (meters east/north of the profile anchor,
 // the frame curtain geometry lives in: x = east, y = up, z = -north)
 // into XR-local space. Pure math — testable headlessly in Node.
+//
+// Alignment = one correspondence captured at session start: the phone's
+// compass heading (= ENU heading of XR -z after subtracting the phone's
+// yaw within XR space) plus (user GPS position in ENU <-> camera x/z in
+// XR). userHeadingOffsetDeg is the manual compass correction; changing
+// it rotates the world around the session-start point (v1 semantics).
 export class EnuFrame {
   constructor() {
-    this.headingDeg = 0;            // compass heading of XR -z (0 = N, 90 = E)
-    this.userEnu = { e: 0, n: 0 };  // user's ENU position at session start
+    this.headingDeg = 0;              // measured ENU heading of XR -z
+    this.userHeadingOffsetDeg = 0;    // manual correction (persisted)
+    this.userEnu = { e: 0, n: 0 };    // user's ENU position at alignment
+    this.xrPos = { x: 0, z: 0 };      // camera XR x/z at the same moment
   }
 
-  setAlignment(headingDeg, userEnu) {
+  setAlignment(headingDeg, userEnu, xrPos = { x: 0, z: 0 }) {
     this.headingDeg = headingDeg;
     this.userEnu = { ...userEnu };
+    this.xrPos = { ...xrPos };
   }
 
-  get headingRad() { return this.headingDeg * Math.PI / 180; }
+  get effHeadingDeg() { return this.headingDeg + this.userHeadingOffsetDeg; }
+  get headingRad() { return this.effHeadingDeg * Math.PI / 180; }
 
   // translation part: where the ENU origin (profile anchor) sits in XR x/z
   _t() {
     const th = this.headingRad, c = Math.cos(th), s = Math.sin(th);
     return {
-      tx: -(this.userEnu.e * c - this.userEnu.n * s),
-      tz: this.userEnu.e * s + this.userEnu.n * c,
+      tx: this.xrPos.x - (this.userEnu.e * c - this.userEnu.n * s),
+      tz: this.xrPos.z + this.userEnu.e * s + this.userEnu.n * c,
     };
   }
 
@@ -48,11 +64,20 @@ export class EnuFrame {
     return Math.atan2(x, -z) + this.headingRad;
   }
 
-  // position a THREE.Group holding ENU-frame geometry into XR space
-  applyToGroup(group, groundY = 0) {
+  // XR-space direction (x, z) -> ENU direction vector (for drag gestures)
+  xrDirToEnu(x, z) {
+    return rotEN(x, -z, this.effHeadingDeg);
+  }
+
+  // position a THREE.Group holding ENU-frame geometry into XR space;
+  // posOffset shifts the profile in ENU meters (manual calibration)
+  applyToGroup(group, posOffset = { e: 0, n: 0 }, groundY = 0) {
+    const th = this.headingRad, c = Math.cos(th), s = Math.sin(th);
     const { tx, tz } = this._t();
-    group.rotation.set(0, this.headingRad, 0);
-    group.position.set(tx, groundY, tz);
+    const ox = posOffset.e * c - posOffset.n * s;
+    const oz = -posOffset.e * s - posOffset.n * c;
+    group.rotation.set(0, th, 0);
+    group.position.set(tx + ox, groundY, tz + oz);
   }
 }
 

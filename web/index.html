@@ -32,6 +32,7 @@
       <p id="profile-info">Loading profile…</p>
       <button id="btn-ar" disabled>Start AR</button>
       <button id="btn-xr" disabled hidden>Start AR (SLAM · WebXR)</button>
+      <button id="btn-xr-fake" hidden>test placement (pretend on-site)</button>
       <button id="btn-debug" disabled>Desktop debug mode</button>
       <p class="hint" id="start-hint"></p>
     </div>
@@ -53,6 +54,7 @@
     </div>
     <div class="row" id="calib-row">
       <button class="cal" id="btn-anchor">⚓ Anchor</button>
+      <button class="cal" id="btn-ground" hidden>⏚ set ground</button>
       <button class="cal" data-cal="rot-">⟲ rotate</button>
       <button class="cal" data-cal="rot+">rotate ⟳</button>
       <button class="cal" data-cal="reset">reset align</button>
