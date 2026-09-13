@@ -11,7 +11,15 @@ professional, iPhone user, develops on Windows — that's why web AR, not native
   base without modifying it). If a third-party package ever becomes
   unavoidable: project-local `.venv` and notify him first.
 - Git identity is configured **repo-local only** (Piotr Hadro
-  <piotr.hadro@gmail.com>); don't set global git config.
+  <piotr.hadro@gmail.com>); don't set global git config. The repo sits on a
+  drive without ownership info → git reports "dubious ownership"; run
+  `git -c safe.directory='*' <cmd>` per command instead of editing global
+  config.
+- Current machine has **no Miniconda on PATH** (`python` = Store stub). Run
+  the stdlib converter with `C:\Users\piotr\.local\bin\python3.12.exe`
+  (uv-managed; nothing gets installed).
+- **Restore point:** tag `restore-2026-09-13` + bundle backup — see
+  HANDOVER.md before any risky change.
 
 ## Domain facts (confirmed by user, don't re-ask)
 
