@@ -56,6 +56,22 @@ html, body {
 .chip.warn { color: #ffb454; }
 .chip.good { color: #7dd97b; }
 
+/* XR-only tracking diagnostics (read-only, never blocks touches) */
+#xr-diag {
+  margin-top: 2px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(16, 20, 24, 0.5);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  opacity: 0.75;
+  white-space: pre;
+  pointer-events: none;
+  width: fit-content;
+}
+#xr-diag[hidden] { display: none; }
+
 #minimap {
   border-radius: 12px;
   background: rgba(16, 20, 24, 0.65);

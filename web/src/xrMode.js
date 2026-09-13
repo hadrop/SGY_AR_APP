@@ -11,6 +11,41 @@ function rotEN(e, n, deg) {
   return { e: e * c + n * s, n: n * c - e * s };
 }
 
+// rotate vector v by unit quaternion q (plain {x,y,z,w} objects, no THREE)
+function rotateByQuat(q, v) {
+  const tx = 2 * (q.y * v.z - q.z * v.y);
+  const ty = 2 * (q.z * v.x - q.x * v.z);
+  const tz = 2 * (q.x * v.y - q.y * v.x);
+  return {
+    x: v.x + q.w * tx + (q.y * tz - q.z * ty),
+    y: v.y + q.w * ty + (q.z * tx - q.x * tz),
+    z: v.z + q.w * tz + (q.x * ty - q.y * tx),
+  };
+}
+
+// apply an XRRigidTransform-like {position, orientation} to a point
+export function transformPoint(t, p) {
+  const r = rotateByQuat(t.orientation, p);
+  return { x: r.x + t.position.x, y: r.y + t.position.y, z: r.z + t.position.z };
+}
+
+// yaw (deg, three rotation.y sense) of an XR orientation quaternion
+export function yawDegOf(orientation) {
+  const d = rotateByQuat(orientation, { x: 0, y: 0, z: -1 });
+  return Math.atan2(-d.x, -d.z) * 180 / Math.PI;
+}
+
+// XRRigidTransform init (position + orientation DOMPointInit) for a group
+// placed at `position` with rotation.y = headingRad — used to create an
+// XRAnchor at the curtain's target pose
+export function anchorPoseInit(position, headingRad) {
+  return {
+    position: { x: position.x, y: position.y, z: position.z, w: 1 },
+    orientation: { x: 0, y: Math.sin(headingRad / 2), z: 0,
+                   w: Math.cos(headingRad / 2) },
+  };
+}
+
 // Maps ENU world coordinates (meters east/north of the profile anchor,
 // the frame curtain geometry lives in: x = east, y = up, z = -north)
 // into XR-local space. Pure math — testable headlessly in Node.
@@ -32,6 +67,15 @@ export class EnuFrame {
     this.headingDeg = headingDeg;
     this.userEnu = { ...userEnu };
     this.xrPos = { ...xrPos };
+  }
+
+  // Reference-space `reset`: the XR coordinate system changed by a rigid
+  // transform (old coords -> new coords). Carry the stored alignment
+  // correspondence along so the geography stays put in the real world.
+  applyXrTransform(t) {
+    const p = transformPoint(t, { x: this.xrPos.x, y: 0, z: this.xrPos.z });
+    this.xrPos = { x: p.x, z: p.z };
+    this.headingDeg += yawDegOf(t.orientation);
   }
 
   get effHeadingDeg() { return this.headingDeg + this.userHeadingOffsetDeg; }

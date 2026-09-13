@@ -3,7 +3,8 @@ import { createCurtain } from './curtain.js';
 import { DebugControls } from './debugControls.js';
 import { Minimap } from './minimap.js';
 import { startCameraFeed, OrientationTracker, GeoTracker } from './pose.js';
-import { EnuFrame, isXrSupported, startXrSession } from './xrMode.js';
+import { EnuFrame, isXrSupported, startXrSession, transformPoint,
+         anchorPoseInit } from './xrMode.js';
 import { latLonToEnu } from './geo.js';
 
 const $ = (id) => document.getElementById(id);
@@ -27,6 +28,21 @@ const state = {
   xrSession: null,
   hitTestSource: null,
   lastHitY: null,
+  // --- XR tracking / anchoring state (never persisted) ---
+  xrTracking: 'none',   // 'none' (no pose) | 'limited' (emulated) | 'ok'
+  xrOkFrames: 0,        // consecutive frames with tracking 'ok'
+  xrOkTime: 0,          // seconds of consecutive 'ok' tracking
+  xrCamPos: null,       // camera position from the pose we fetched (m)
+  xrCamQuat: null,      // camera orientation from that pose
+  xrFirstPos: null,     // first tracked camera position (diagnostic)
+  xrMaxTranslation: 0,  // max horizontal camera travel since first pose
+  xrHitSeen: false,     // a hit-test result was seen in the current frame
+  xrLowestHitY: null,   // lowest near-horizontal hit seen so far
+  xrAnchor: null,       // XRAnchor holding the curtain pose (if supported)
+  xrAnchorStatus: 'none', // 'none' | 'tracked' | 'lost' | 'failed' | 'unsupported'
+  xrAnchorDirty: false, // placement changed -> recreate anchor next frame
+  xrAnchorReq: 0,       // createAnchor request counter (drop stale results)
+  xrRefSpace: null,     // reference space we listen to for 'reset'
   debugControls: null,
   height: 1.6,          // phone height above ground (m)
   posOffset: { e: 0, n: 0 },  // manual profile shift (m)
@@ -306,11 +322,19 @@ async function startXr() {
     state.xrUserEnu = userEnu;
     state.xrNeedsAlign = true;
     state.lastHitY = null;
-    state.profileGroup.visible = false;   // until the first-frame alignment
+    resetXrTrackingState();
+    state.profileGroup.visible = false;   // until the gated alignment
     state.xrSession = await startXrSession(renderer, {
       overlayRoot: document.body,
       onEnd: exitXr,
     });
+    // ARCore map corrections arrive as reference-space resets; carry the
+    // stored alignment through the rigid transform so the curtain stays
+    // put in the real world (see EnuFrame.applyXrTransform)
+    state.xrRefSpace = renderer.xr.getReferenceSpace();
+    if (state.xrRefSpace) {
+      state.xrRefSpace.addEventListener('reset', onXrReferenceReset);
+    }
     state.xrSession.requestReferenceSpace('viewer')
       .then((vs) => state.xrSession.requestHitTestSource({ space: vs }))
       .then((src) => { state.hitTestSource = src; })
@@ -330,16 +354,61 @@ async function startXr() {
 function applyXrPlacement() {
   state.enuFrame.applyToGroup(
     state.profileGroup, state.xrPosOffset, state.xrGroundY);
+  // gestures/buttons run outside the XR frame callback; the anchor is
+  // (re)created inside the next animate() frame
+  state.xrAnchorDirty = true;
+}
+
+function resetXrTrackingState() {
+  state.xrTracking = 'none';
+  state.xrOkFrames = 0;
+  state.xrOkTime = 0;
+  state.xrCamPos = null;
+  state.xrCamQuat = null;
+  state.xrFirstPos = null;
+  state.xrMaxTranslation = 0;
+  state.xrHitSeen = false;
+  state.xrLowestHitY = null;
+  deleteXrAnchor();
+  state.xrAnchorStatus = 'none';
+  state.xrAnchorDirty = false;
+  state.xrAnchorReq++;   // invalidate any in-flight createAnchor
+}
+
+function deleteXrAnchor() {
+  if (state.xrAnchor) {
+    try { state.xrAnchor.delete(); } catch { /* session may be gone */ }
+  }
+  state.xrAnchor = null;
+}
+
+function onXrReferenceReset(e) {
+  // positions/hits recorded before the reset live in the old coordinates
+  state.xrFirstPos = null;
+  state.xrMaxTranslation = 0;
+  state.xrLowestHitY = null;
+  if (!e.transform || !state.enuFrame || state.xrNeedsAlign) return;
+  const xp = state.enuFrame.xrPos;
+  state.xrGroundY = transformPoint(
+    e.transform, { x: xp.x, y: state.xrGroundY, z: xp.z }).y;
+  state.enuFrame.applyXrTransform(e.transform);
+  applyXrPlacement();
 }
 
 function exitXr() {
   if (state.mode !== 'xr') return;
   state.mode = null;
+  if (state.xrRefSpace) {
+    state.xrRefSpace.removeEventListener('reset', onXrReferenceReset);
+  }
+  state.xrRefSpace = null;
+  resetXrTrackingState();
   state.xrSession = null;
   state.hitTestSource = null;
   state.xrNeedsAlign = false;
   state.xrGroundY = 0;
   state.xrGroundSource = null;
+  $('xr-diag').hidden = true;
   if (reticle) reticle.visible = false;
   state.profileGroup.visible = true;
   state.profileGroup.rotation.set(0, 0, 0);
@@ -376,6 +445,7 @@ function enterViewer(label) {
   $('ctl-height').parentElement.style.display =
     state.mode === 'xr' ? 'none' : '';
   $('btn-ground').hidden = state.mode !== 'xr';
+  $('xr-diag').hidden = state.mode !== 'xr';
   applyProfileOffset();
   applyUniforms();
   updateAnchorButton();
@@ -555,9 +625,28 @@ function updateHud() {
       gpsChip.className = 'chip warn';
     }
   } else if (state.mode === 'xr') {
-    user = state.enuFrame.xrToEnu(camera.position.x, camera.position.z);
-    gpsChip.textContent = state.xrNeedsAlign ? 'placing…' : 'SLAM tracking';
-    gpsChip.className = 'chip ' + (state.xrNeedsAlign ? 'warn' : 'good');
+    // three's camera is stale while ARCore has no pose; use ours
+    const cp = state.xrCamPos || camera.position;
+    user = state.enuFrame.xrToEnu(cp.x, cp.z);
+    if (state.xrTracking === 'none') {
+      gpsChip.textContent = '⚠ tracking lost — move slowly';
+      gpsChip.className = 'chip warn';
+    } else if (state.xrNeedsAlign) {
+      gpsChip.textContent = 'placing — scan the ground slowly';
+      gpsChip.className = 'chip warn';
+    } else {
+      gpsChip.textContent = state.xrTracking === 'ok'
+        ? 'SLAM tracking' : 'SLAM tracking (limited)';
+      gpsChip.className = 'chip ' + (state.xrTracking === 'ok' ? 'good' : 'warn');
+    }
+    const f2 = (v) => (v == null ? '—' : v.toFixed(2));
+    $('xr-diag').textContent =
+      `trk ${state.xrTracking} ok×${state.xrOkFrames}\n` +
+      `cam ${f2(cp.x)} ${f2(cp.y)} ${f2(cp.z)} ` +
+      `Δmax ${state.xrMaxTranslation.toFixed(2)} m\n` +
+      `gnd ${state.xrGroundSource || 'n/a'} y=${f2(state.xrGroundY)} ` +
+      `hit ${state.xrHitSeen ? 'y' : 'n'}\n` +
+      `anchor ${state.xrAnchorStatus}`;
   } else if (state.mode === 'debug') {
     user = { e: camera.position.x, n: -camera.position.z };
     gpsChip.textContent = 'GPS simulated';
@@ -574,7 +663,8 @@ function updateHud() {
     distChip.textContent = `dist ${dMin.toFixed(1)} m`;
   }
 
-  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(
+    (state.mode === 'xr' && state.xrCamQuat) || camera.quaternion);
   const heading = state.mode === 'xr'
     ? state.enuFrame.enuHeadingOfXrDir(fwd.x, fwd.z)
     : Math.atan2(fwd.x, -fwd.z);
@@ -587,47 +677,147 @@ function updateHud() {
 const clock = new THREE.Clock();
 let hudTimer = 0;
 
-// Align the ENU frame on the first XR frame: the compass heading was
-// captured at the start tap; here we read where the camera actually is
-// (and which way it yaws) inside the fresh XR space and tie the two.
-function alignXr(frame) {
-  const pose = frame.getViewerPose(renderer.xr.getReferenceSpace());
-  if (!pose) return;
+// Per-frame ARCore tracking state. Chrome returns a null viewer pose
+// whenever tracking is PAUSED (featureless ground, fast motion, low
+// light); three r170 then leaves the camera stale but still renders, so
+// the curtain would freeze on screen while the camera image moves.
+function updateXrTracking(pose, dt) {
+  if (!pose) {
+    state.xrTracking = 'none';
+    state.xrOkFrames = 0;
+    state.xrOkTime = 0;
+    return;
+  }
+  const p = pose.transform.position, o = pose.transform.orientation;
+  state.xrCamPos = { x: p.x, y: p.y, z: p.z };
+  state.xrCamQuat = (state.xrCamQuat || new THREE.Quaternion())
+    .set(o.x, o.y, o.z, o.w);
+  if (pose.emulatedPosition) {
+    state.xrTracking = 'limited';
+    state.xrOkFrames = 0;
+    state.xrOkTime = 0;
+  } else {
+    state.xrTracking = 'ok';
+    state.xrOkFrames++;
+    state.xrOkTime += dt;
+  }
+  if (!state.xrFirstPos) state.xrFirstPos = { x: p.x, z: p.z };
+  const d = Math.hypot(p.x - state.xrFirstPos.x, p.z - state.xrFirstPos.z);
+  if (d > state.xrMaxTranslation) state.xrMaxTranslation = d;
+}
+
+// Gated alignment: ARCore needs a map before its origin/ground mean
+// anything, so wait for >= 15 consecutive solid frames plus a hit-test
+// result (or 10 s of solid tracking if hit-test never delivers). The
+// compass heading was captured at the start tap; here we read the
+// camera's yaw inside XR space and tie the two.
+const ALIGN_OK_FRAMES = 15, ALIGN_FALLBACK_S = 10;
+function alignXrGated(pose) {
+  if (state.xrTracking !== 'ok') return;
+  const ready = (state.xrOkFrames >= ALIGN_OK_FRAMES && state.xrHitSeen) ||
+                state.xrOkTime >= ALIGN_FALLBACK_S;
+  if (!ready) return;
   const p = pose.transform.position, o = pose.transform.orientation;
   const q = new THREE.Quaternion(o.x, o.y, o.z, o.w);
   const yawDeg = compassHeadingOf(q);  // same fwd/up convention both sides
   state.enuFrame.setAlignment(
     state.xrHeadingAtStart - yawDeg, state.xrUserEnu, { x: p.x, z: p.z });
-  // local-floor's y=0 can land at phone height instead of the ground;
-  // start from camera height minus phone height, refine via hit-test
-  state.xrGroundY = p.y - state.height;
+  // local-floor on ARCore is a fixed offset below the start pose, not a
+  // detected floor: prefer the lowest horizontal hit seen so far, else
+  // camera height minus phone height; either way keep 'estimate' so the
+  // hit-test auto-snap below still refines it
+  state.xrGroundY = state.xrLowestHitY != null
+    ? state.xrLowestHitY : p.y - state.height;
   state.xrGroundSource = 'estimate';
   applyXrPlacement();
   state.profileGroup.visible = true;
   state.xrNeedsAlign = false;
 }
 
-function updateReticle(frame) {
+// hit orientation's +Y axis must be near vertical (within 20°) to count
+// as ground — rejects walls, bushes, the user's own legs
+const HORIZ_COS = Math.cos(20 * Math.PI / 180);
+const _hitQ = new THREE.Quaternion(), _hitUp = new THREE.Vector3();
+function updateReticle(frame, camY) {
+  state.xrHitSeen = false;
   if (!state.hitTestSource) return;
   ensureReticle();
   const hits = frame.getHitTestResults(state.hitTestSource);
   const pose = hits.length &&
     hits[0].getPose(renderer.xr.getReferenceSpace());
   if (pose) {
-    const p = pose.transform.position;
+    const p = pose.transform.position, o = pose.transform.orientation;
+    state.xrHitSeen = true;
     reticle.position.set(p.x, p.y, p.z);
     reticle.visible = true;
     state.lastHitY = p.y;
-    // first hit well below the camera = the real ground; snap the
-    // profile top there once (manual "set ground" always wins)
-    if (state.xrGroundSource === 'estimate' &&
-        p.y < camera.position.y - 0.8) {
-      state.xrGroundY = p.y;
-      state.xrGroundSource = 'auto';
-      applyXrPlacement();
+    _hitUp.set(0, 1, 0).applyQuaternion(_hitQ.set(o.x, o.y, o.z, o.w));
+    const groundLike = _hitUp.y > HORIZ_COS && p.y < camY - 0.8;
+    if (groundLike) {
+      if (state.xrLowestHitY == null || p.y < state.xrLowestHitY) {
+        state.xrLowestHitY = p.y;
+      }
+      // first horizontal hit well below the camera = the real ground;
+      // snap the profile top there once (manual "set ground" always wins)
+      if (state.xrGroundSource === 'estimate') {
+        state.xrGroundY = p.y;
+        state.xrGroundSource = 'auto';
+        applyXrPlacement();
+      }
     }
   } else {
     reticle.visible = false;
+  }
+}
+
+// XR anchors: let ARCore carry the curtain through map corrections. The
+// anchor is recreated whenever the placement changes (flagged by
+// applyXrPlacement); while it tracks, its pose overrides the directly
+// computed group transform.
+function updateXrAnchor(frame, ref) {
+  if (typeof frame.createAnchor !== 'function' ||
+      typeof XRRigidTransform === 'undefined') {
+    state.xrAnchorStatus = 'unsupported';
+    return;
+  }
+  if (state.xrAnchorDirty) {
+    // drop the old anchor at once (its tracked pose would undo the new
+    // placement), but create the new one only after the gesture ends —
+    // otherwise a drag would churn one ARCore anchor per frame
+    deleteXrAnchor();
+    state.xrAnchorStatus = 'none';
+    if (touchState) return;
+    state.xrAnchorDirty = false;
+    const g = state.profileGroup;
+    const init = anchorPoseInit(g.position, g.rotation.y);
+    const req = ++state.xrAnchorReq;
+    frame.createAnchor(
+      new XRRigidTransform(init.position, init.orientation), ref)
+      .then((anchor) => {
+        if (req !== state.xrAnchorReq || state.mode !== 'xr') {
+          try { anchor.delete(); } catch { /* ignore */ }
+          return;
+        }
+        state.xrAnchor = anchor;
+      })
+      .catch(() => {
+        // rejected (e.g. 'anchors' not granted): keep the direct
+        // placement; no retry until the placement changes again
+        if (req === state.xrAnchorReq) state.xrAnchorStatus = 'failed';
+      });
+    return;
+  }
+  if (!state.xrAnchor) return;
+  const pose = frame.getPose(state.xrAnchor.anchorSpace, ref);
+  if (pose) {
+    const p = pose.transform.position, o = pose.transform.orientation;
+    state.profileGroup.position.set(p.x, p.y, p.z);
+    state.profileGroup.quaternion.set(o.x, o.y, o.z, o.w);
+    state.xrAnchorStatus = 'tracked';
+  } else if (state.xrAnchorStatus !== 'lost') {
+    state.xrAnchorStatus = 'lost';
+    state.enuFrame.applyToGroup(          // fall back, no anchor recreate
+      state.profileGroup, state.xrPosOffset, state.xrGroundY);
   }
 }
 
@@ -644,9 +834,24 @@ function animate(time, frame) {
     state.debugControls.update(dt);
     camera.position.y = Math.max(camera.position.y, 0.2);
   } else if (state.mode === 'xr' && frame) {
-    // camera itself is driven by three's WebXRManager from SLAM poses
-    if (state.xrNeedsAlign) alignXr(frame);
-    updateReticle(frame);
+    // camera itself is driven by three's WebXRManager from SLAM poses;
+    // we read the pose ourselves to know when there is none
+    const ref = renderer.xr.getReferenceSpace();
+    const pose = frame.getViewerPose(ref);
+    updateXrTracking(pose, dt);
+    if (!pose) {
+      // frozen camera: hide the curtain instead of letting it ride the screen
+      state.profileGroup.visible = false;
+      if (reticle) reticle.visible = false;
+    } else {
+      updateReticle(frame, pose.transform.position.y);
+      if (state.xrNeedsAlign) {
+        alignXrGated(pose);
+      } else {
+        state.profileGroup.visible = true;
+        updateXrAnchor(frame, ref);
+      }
+    }
   }
 
   hudTimer += dt;

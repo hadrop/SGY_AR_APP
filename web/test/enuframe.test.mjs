@@ -1,6 +1,6 @@
 // Headless checks for EnuFrame (pure math, no browser globals needed).
 // Run: node web/test/enuframe.test.mjs
-import { EnuFrame } from '../src/xrMode.js';
+import { EnuFrame, transformPoint, yawDegOf, anchorPoseInit } from '../src/xrMode.js';
 
 let fails = 0;
 const close = (a, b) => Math.abs(a - b) < 1e-9;
@@ -77,6 +77,46 @@ const gz = -lx * s + lz * c + group.pz;
 check('group transform = enuToXr(p + off)', { x: gx, z: gz },
       f.enuToXr(pt.e + off.e, pt.n + off.n));
 check('groundY applied', { y: group.py }, { y: 0.42 });
+
+// applyXrTransform (reference-space `reset`): identity is a no-op, a pure
+// translation shifts xrPos, a 90° yaw rotates the stored point and heading.
+// Invariant: every ENU point must map to transformPoint(t, old XR point).
+const ID = { x: 0, y: 0, z: 0, w: 1 };
+{
+  const g = new EnuFrame();
+  g.setAlignment(237, { e: 12.3, n: -4.56 }, { x: 1.5, z: -0.7 });
+  g.applyXrTransform({ position: { x: 0, y: 0, z: 0 }, orientation: ID });
+  check('reset identity: xrPos', g.xrPos, { x: 1.5, z: -0.7 });
+  check('reset identity: heading', { h: g.headingDeg }, { h: 237 });
+
+  g.applyXrTransform({ position: { x: 2, y: 5, z: -3 }, orientation: ID });
+  check('reset translate: xrPos', g.xrPos, { x: 3.5, z: -3.7 });
+  check('reset translate: heading', { h: g.headingDeg }, { h: 237 });
+  check('reset translate: user maps to new xrPos',
+        g.enuToXr(12.3, -4.56), { x: 3.5, z: -3.7 });
+
+  // 90° yaw about +y (three rotation.y sense): (0,0,-1) -> (-1,0,0)
+  const q90 = { x: 0, y: Math.sin(Math.PI / 4), z: 0, w: Math.cos(Math.PI / 4) };
+  check('yawDegOf 90', { y: yawDegOf(q90) }, { y: 90 });
+  check('yawDegOf identity', { y: yawDegOf(ID) }, { y: 0 });
+  const before = g.enuToXr(-3.2, 8.8);
+  const t90 = { position: { x: 0.4, y: 0, z: -1.1 }, orientation: q90 };
+  g.applyXrTransform(t90);
+  check('reset yaw90: xrPos rotated', g.xrPos, { x: -3.7 + 0.4, z: -3.5 - 1.1 });
+  check('reset yaw90: heading', { h: g.headingDeg }, { h: 327 });
+  const want = transformPoint(t90, { x: before.x, y: 0, z: before.z });
+  check('reset yaw90: ENU point follows transform', g.enuToXr(-3.2, 8.8),
+        { x: want.x, z: want.z });
+}
+
+// anchorPoseInit: heading 0 -> identity orientation; heading pi -> 180° yaw
+{
+  const a = anchorPoseInit({ x: 1, y: 2, z: 3 }, 0);
+  check('anchor init pos', a.position, { x: 1, y: 2, z: 3, w: 1 });
+  check('anchor init identity', a.orientation, { x: 0, y: 0, z: 0, w: 1 });
+  const b = anchorPoseInit({ x: 0, y: 0, z: 0 }, Math.PI / 2);
+  check('anchor init yaw 90', { y: yawDegOf(b.orientation) }, { y: 90 });
+}
 
 console.log(fails ? `\n${fails} FAILURES` : '\nall passed');
 process.exit(fails ? 1 : 0);
