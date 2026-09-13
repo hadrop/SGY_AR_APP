@@ -26,6 +26,15 @@
     "lon": 23.04688119198315
    },
    "length_m": 20.46
+  },
+  {
+   "name": "ARKADIA_TEST_1_0003_X_1_ramp_ramp",
+   "dir": "data/profiles/ARKADIA_TEST_1_0003_X_1_ramp_ramp",
+   "anchor": {
+    "lat": 52.433543600660094,
+    "lon": 22.892995109234576
+   },
+   "length_m": 20.48
   }
  ]
 }
