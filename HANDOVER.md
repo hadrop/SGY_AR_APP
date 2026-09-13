@@ -35,6 +35,24 @@ master in ~30–60 s; repo hadrop/SGY_AR_APP, public).
 - **v2 (WebXR / SLAM)** — Phase 2 (georeferencing) built, deployed,
   field-tested ("works great"). The ground-height fix (`68f0bfc`, layered
   ground estimate) is deployed but **still not re-tested in the field**.
+- **XR stability fix (`86535e0`, branch `fix/xr-tracking-stability`)** —
+  addresses the field report "curtain moves with me when I walk toward it
+  and floats above the ground". Findings: Chrome/ARCore returns a *null*
+  viewer pose while tracking is paused (it never sets `emulatedPosition`),
+  three r170 then renders with the stale camera; `local-floor` on ARCore is
+  a fixed 1.2 m offset below the start pose, not a detected floor. Fix:
+  per-frame tracking state (curtain hidden + "tracking lost" chip on null
+  pose), gated alignment (15 tracked frames + a hit-test result, 10 s
+  fallback, "scan the ground" prompt), horizontal-only ground auto-snap,
+  XR-anchor-driven placement with fallback, `reset` handling, and an XR
+  diagnostics line in the HUD. **Awaiting field test.** What to read on
+  the phone: the diag line's `track` state and `Δmax` (max camera
+  translation) — if `Δmax` stays near 0 while walking, the phone's ARCore
+  never delivered 6DoF and the app cannot fix that; `anchor` should read
+  `tracked` once placed. Follow-ups noted by review: Chromium may fire
+  `reset` without a `transform` (handler then only clears diagnostics —
+  anchors are the real mechanism); a gesture re-anchors at the direct
+  placement, discarding anchor drift correction until the next reset.
 
 ### Profiles shipped (`web/public/data/manifest.json`)
 
